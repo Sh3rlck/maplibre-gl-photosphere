@@ -1,7 +1,16 @@
-# maplibre-gl-photosphere
+# @topodot/maplibre-gl-photosphere
 
-[![npm](https://img.shields.io/npm/v/maplibre-gl-photosphere)](https://www.npmjs.com/package/maplibre-gl-photosphere)
 [![license](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
+
+> **Fork notice.** This is a fork of
+> [maplibre-gl-photosphere](https://github.com/clement-igonet/maplibre-gl-photosphere)
+> 0.5.0 by Clement IGONET, distributed under the same BSD 3-Clause license
+> (see [LICENSE](LICENSE)). It is not endorsed by the original author.
+> Changes in this fork are listed in [CHANGELOG.md](CHANGELOG.md) under 1.0.0:
+> configurable arrow style, `preload()` with off-main-thread decoding (large
+> panoramas no longer freeze each step), scroll-wheel FOV zoom,
+> `transitioning` / `fov` getters, TypeScript types, and fixes to the
+> enter/exit animations. The demos and sections below are upstream's.
 
 Step off the map, into the street. An immersive 360° photosphere plugin for
 [MapLibre GL JS](https://github.com/maplibre/maplibre-gl-js)
@@ -29,7 +38,24 @@ one panorama, one `enter()` call, view-source-friendly.
 ## Install
 
 ```sh
-npm install maplibre-gl-photosphere
+npm install @topodot/maplibre-gl-photosphere
+```
+
+```js
+import {Photosphere} from '@topodot/maplibre-gl-photosphere';
+
+const photosphere = new Photosphere(map, {
+    lngLat, imageUrl,
+    // Fork additions (all optional):
+    arrowStyle: {color: [0.18, 0.6, 0.81], edgeColor: [1, 1, 1], edgeWidth: 0.12, size: 0.6, distance: 6},
+    scrollZoom: true,               // wheel zooms the FOV while inside (default)
+    scrollZoomStep: 4               // FOV degrees per wheel notch (default)
+});
+
+photosphere.preload(nextPano.imageUrl); // decode the next/previous pano ahead of goTo()
+photosphere.setArrowStyle({size: 0.8}); // change any arrow field at runtime
+photosphere.transitioning;              // true while goTo() walks
+photosphere.fov;                        // current vertical FOV (deg)
 ```
 
 Or without a bundler — it's plain ES modules:
@@ -187,16 +213,18 @@ is what keeps photo and vector locked together at any FOV.
 
 ## Development
 
-Tests and previews run in containers (see [RULES.md](RULES.md)):
-
 ```sh
-podman compose run --rm test    # vitest suite (docker compose works too)
-podman compose up -d web        # demo preview on 127.0.0.1:8090
+npm ci
+npm test                        # vitest suite
+npm publish                     # publishes @topodot/maplibre-gl-photosphere (public)
 ```
 
-Used in the wild by [MapMax](https://github.com/clement-igonet/mapmax),
-a full Panoramax street-view app built on this plugin.
+`docker-compose.yml` still offers upstream's containerized `test` and `web`
+(demo preview) services.
+
+Upstream (by Clement IGONET) is used in the wild by
+[MapMax](https://github.com/clement-igonet/mapmax), a Panoramax street-view app.
 
 ## License
 
-BSD-3-Clause
+BSD-3-Clause. Copyright (c) 2026, Clement IGONET; see [LICENSE](LICENSE).

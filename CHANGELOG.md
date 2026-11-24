@@ -8,6 +8,36 @@
 - #3: flat pictures — gnomonic perspective window in the sphere shader ([#7](https://github.com/clement-igonet/maplibre-gl-photosphere/pull/7)) (by [@clement-igonet](https://github.com/clement-igonet))
 # Changelog
 
+## 1.0.0 (TopoDOT fork of 0.5.0)
+
+Published as `@topodot/maplibre-gl-photosphere`.
+
+### ✨ Features and improvements
+- Arrow style: `arrowStyle` option and `setArrowStyle()` with `color`, `edgeColor`
+  ([r, g, b] 0..1), `edgeWidth` (ground metres, 0 = no rim), `size` (scale) and
+  `distance` (metres from the eye). `groundPick()` follows the same shape. The
+  defaults reproduce 0.5.0's white arrows exactly.
+- Scroll-wheel FOV zoom while inside (`scrollZoom`, `scrollZoomStep`); 0.5.0's
+  README promised it but no wheel handler existed.
+- Public getters `transitioning` (a `goTo()` walk is running) and `fov`.
+- `preload(url)`: download and decode a panorama ahead of `enter()`/`goTo()`
+  (keeps the 2 most recent), so the step itself only pays the texture upload.
+- Panoramas decode off the main thread (`fetch` + `createImageBitmap`, falling
+  back to `<img>`). With 8192×4096 JPEGs the synchronous decode froze the page
+  for ~400 ms at the start of every step.
+- TypeScript types (`src/index.d.ts`).
+
+### 🐞 Bug fixes
+- `enter()` left the last animation frame's sphere offset in place, so on slow
+  frames the photo stayed drawn as a distant ball until the first `goTo()`.
+  The offset is now reset when the camera reaches the anchor.
+- Arrows and dots stayed pinned on screen at full opacity during the enter and
+  exit flights. They now show only while inside.
+- `exit()` measured the sphere offset from the map centre (the look target far
+  ahead), so the photo vanished on the first frame and flickered on slow
+  frames. The photo now stays on the eye and fades out. Enter/exit offsets are
+  taken from the frame being drawn, not the previous one.
+
 ## 0.5.0
 
 ### ✨ Features and improvements

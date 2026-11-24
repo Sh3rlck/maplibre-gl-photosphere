@@ -32,7 +32,43 @@ const TILE_REFRESH_MS = 150; // debounce between look/zoom and a tile refresh
 const ATLAS_MAX = 8192; // atlas width cap (px) — beyond this, tiles downscale
 
 const MAX_ARROWS = 6;
-const ARROW_GROUND_DIST = 5; // where a ground arrow sits, from the eye (m)
+const ARROW_GROUND_DIST = 5; // default distance of a ground arrow from the eye (m)
+// Arrowhead in its local frame at size 1 (m): x = right, y = forward toward the target.
+const ARROW_BASE = -0.7;
+const ARROW_TIP = 1.7;
+const ARROW_HALF_W = 1.15;
+// Incircle of that triangle: growing the shape about its centre by r→r+e gives an even e-wide rim.
+const ARROW_INRADIUS = (ARROW_HALF_W * (ARROW_TIP - ARROW_BASE)) / (ARROW_HALF_W + Math.hypot(ARROW_HALF_W, ARROW_TIP - ARROW_BASE));
+const ARROW_INCENTRE_Y = ARROW_BASE + ARROW_INRADIUS;
+const DEFAULT_ARROW_STYLE = {
+    color: [1, 1, 1], // fill, [r, g, b] 0..1
+    edgeColor: [1, 1, 1], // rim, [r, g, b] 0..1
+    edgeWidth: 0, // rim width on the ground (m); 0 = no rim
+    size: 1, // scale of the arrowhead
+    distance: ARROW_GROUND_DIST // ground distance from the eye (m)
+};
+const glFloat = (value) => value.toFixed(6);
+const PRELOAD_MAX = 2; // decoded panoramas kept by preload() (e.g. next + previous)
+
+// A panorama decoded off the main thread (fetch + createImageBitmap) where the browser can, so
+// the only main-thread cost left is the texture upload. Falls back to an <img> elsewhere.
+function decodeImage(url) {
+    if (typeof createImageBitmap === 'function' && typeof fetch === 'function') {
+        return fetch(url, { mode: 'cors', credentials: 'same-origin' })
+            .then((response) => {
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                return response.blob();
+            })
+            .then((blob) => createImageBitmap(blob));
+    }
+    return new Promise((resolve, reject) => {
+        const image = new Image();
+        image.crossOrigin = 'anonymous';
+        image.onload = () => resolve(image);
+        image.onerror = reject;
+        image.src = url;
+    });
+}
 const MAX_POIS = 12;
 const POI_RADIUS_M = 0.85; // ground radius of a neighbour-panorama dot (m)
 const POI_PICK_RADIUS_M = 1.1;
@@ -62,6 +98,11 @@ const FRAGMENT_SHADER_SOURCE = `
     uniform float uEyeHeight;      // eye height above the ground (m)
     uniform int uArrowCount;
     uniform vec2 uArrows[${MAX_ARROWS}]; // ground positions (east, north) m from the eye
+    uniform vec3 uArrowColor;      // arrow fill
+    uniform vec3 uArrowEdgeColor;  // arrow rim
+    uniform float uArrowSize;      // arrowhead scale
+    uniform float uArrowEdge;      // rim width on the ground (m), 0 = none
+    uniform float uOverlay;        // enter/exit fade of the arrows and dots (blend-independent)
     uniform int uPoiCount;
     uniform vec2 uPois[${MAX_POIS}];     // neighbour-pano ground positions (east, north) m
     uniform vec3 uPoiColors[${MAX_POIS}]; // per-dot disc color (default blue)
@@ -105,11 +146,17 @@ const FRAGMENT_SHADER_SOURCE = `
     // A filled arrowhead in the arrow's local frame (x = right, y = forward),
     // tapering from a base to a tip that points toward the target.
     float arrowMask(vec2 lp) {
-        float base = -0.7, tip = 1.7, halfW = 1.15;
+        float base = ${glFloat(ARROW_BASE)}, tip = ${glFloat(ARROW_TIP)}, halfW = ${glFloat(ARROW_HALF_W)};
         if (lp.y < base || lp.y > tip) return 0.0;
         float f = (lp.y - base) / (tip - base);         // 0 at base .. 1 at tip
         float w = halfW * (1.0 - f);                     // taper to a point
         return abs(lp.x) < w ? 1.0 : 0.0;
+    }
+
+    // The arrowhead grown by edge (arrow units) on every side: scaled about its incentre.
+    float arrowOuterMask(vec2 lp, float edge) {
+        vec2 c = vec2(0.0, ${glFloat(ARROW_INCENTRE_Y)});
+        return arrowMask(c + (lp - c) * (${glFloat(ARROW_INRADIUS)} / (${glFloat(ARROW_INRADIUS)} + edge)));
     }
 
     void main() {
@@ -161,16 +208,17 @@ const FRAGMENT_SHADER_SOURCE = `
                 if (i >= uPoiCount) break;
                 float d = length(g - uPois[i]);
                 if (d < ${POI_RADIUS_M.toFixed(2)}) {
-                    rgb = mix(rgb, uPoiColors[i], 0.9);
-                    a = max(a, 0.9);
+                    rgb = mix(rgb, uPoiColors[i], 0.9 * uOverlay);
+                    a = max(a, 0.9 * uOverlay);
                 } else if (d < ${(POI_RADIUS_M + 0.16).toFixed(2)}) {
-                    rgb = mix(rgb, vec3(1.0), 0.9);      // white rim
-                    a = max(a, 0.9);
+                    rgb = mix(rgb, vec3(1.0), 0.9 * uOverlay); // white rim
+                    a = max(a, 0.9 * uOverlay);
                 }
             }
 
-            // Walk arrows, on top of the dots.
+            // Walk arrows, on top of the dots: a fill and an optional rim.
             float mask = 0.0;
+            float rim = 0.0;
             for (int i = 0; i < ${MAX_ARROWS}; i++) {
                 if (i >= uArrowCount) break;
                 vec2 ap = uArrows[i];
@@ -178,11 +226,17 @@ const FRAGMENT_SHADER_SOURCE = `
                 vec2 fwd = normalize(ap);
                 vec2 rgt = vec2(fwd.y, -fwd.x);
                 vec2 d = g - ap;
-                mask = max(mask, arrowMask(vec2(dot(d, rgt), dot(d, fwd))));
+                vec2 lp = vec2(dot(d, rgt), dot(d, fwd)) / uArrowSize;
+                mask = max(mask, arrowMask(lp));
+                if (uArrowEdge > 0.0) rim = max(rim, arrowOuterMask(lp, uArrowEdge / uArrowSize));
+            }
+            if (rim > 0.0 && mask <= 0.0) {
+                rgb = mix(rgb, uArrowEdgeColor, 0.9 * uOverlay);
+                a = max(a, 0.9 * uOverlay);
             }
             if (mask > 0.0) {
-                rgb = mix(rgb, vec3(1.0), 0.85);         // white arrow over the photo
-                a = max(a, 0.85);                        // always visible, any blend
+                rgb = mix(rgb, uArrowColor, 0.85 * uOverlay); // arrow over the photo
+                a = max(a, 0.85 * uOverlay);             // any blend; fades with enter/exit
             }
         }
 
@@ -196,6 +250,15 @@ const normalize3 = (v) => {
     const l = Math.hypot(v[0], v[1], v[2]) || 1;
     return [v[0] / l, v[1] / l, v[2] / l];
 };
+
+// JS twin of the shader's arrowMask / arrowOuterMask, in arrow-local coords at size 1.
+function arrowHit(lx, ly, edge = 0) {
+    const k = ARROW_INRADIUS / (ARROW_INRADIUS + edge);
+    const x = lx * k;
+    const y = ARROW_INCENTRE_Y + (ly - ARROW_INCENTRE_Y) * k;
+    if (y < ARROW_BASE || y > ARROW_TIP) return false;
+    return Math.abs(x) < ARROW_HALF_W * (1 - (y - ARROW_BASE) / (ARROW_TIP - ARROW_BASE));
+}
 
 function compileShader(gl, type, source) {
     const shader = gl.createShader(type);
@@ -216,7 +279,9 @@ const DEFAULT_OPTIONS = {
     dragSensitivity: 0.15,
     minPitch: -85,
     maxPitch: 85,
-    fov: 75
+    fov: 75,
+    scrollZoom: true, // mouse wheel zooms the FOV while inside
+    scrollZoomStep: 4 // FOV degrees per wheel notch
 };
 
 /**
@@ -241,6 +306,8 @@ export class Photosphere {
         this._savedFov = null; // map's vertical FOV before entering
         this._navArrows = []; // [{ bearing (deg), id }] rendered on the floor
         this._navPois = []; //   [{ east, north (m from eye), id, color? }] floor dots
+        this._arrowStyle = { ...DEFAULT_ARROW_STYLE, ...(options.arrowStyle || {}) };
+        this._preloaded = new Map(); // url → Promise of a decoded image, from preload()
         this._sphereCenterOffset = [0, 0, 0];
         this._sphereCenterOffset2 = [0, 0, 0]; // next pano while walking (#5b)
         this._mix = 0; // crossfade weight during a walk transition
@@ -294,7 +361,9 @@ export class Photosphere {
         this._onTouchStart = this._onTouchStart.bind(this);
         this._onTouchMove = this._onTouchMove.bind(this);
         this._onTouchEnd = this._onTouchEnd.bind(this);
+        this._onWheel = this._onWheel.bind(this);
         const container = map.getContainer();
+        container.addEventListener('wheel', this._onWheel, { passive: false });
         container.addEventListener('mousedown', this._onMouseDown);
         addEventListener('mousemove', this._onMouseMove);
         addEventListener('mouseup', this._onMouseUp);
@@ -320,6 +389,17 @@ export class Photosphere {
 
     get yaw() { return this._yawDeg; }
     get pitch() { return this._pitchDeg; }
+    // True while goTo() is walking between two panoramas.
+    get transitioning() { return this._transitioning; }
+    // Current vertical field of view (deg), as zoomed by zoomFov().
+    get fov() { return this._options.fov; }
+
+    // Style of the ground walk arrows; only the given fields change.
+    // { color, edgeColor: [r, g, b] 0..1, edgeWidth (m, 0 = none), size (scale), distance (m from the eye) }
+    setArrowStyle(style = {}) {
+        this._arrowStyle = { ...this._arrowStyle, ...style };
+        this._map.triggerRepaint();
+    }
 
     // Live capture-pose correction of the CURRENT panorama: yaw = world azimuth
     // of the image centre, pitch/roll = capture tilt to undo. Only the
@@ -408,19 +488,17 @@ export class Photosphere {
     groundPick(px, py) {
         const g = this.groundPointAt(px, py);
         if (!g) return null;
+        const { size, distance, edgeWidth } = this._arrowStyle;
         for (const a of this._navArrows) {
             const br = a.bearing * Math.PI / 180;
-            const ap = [ARROW_GROUND_DIST * Math.sin(br), ARROW_GROUND_DIST * Math.cos(br)];
+            const ap = [distance * Math.sin(br), distance * Math.cos(br)];
             const len = Math.hypot(ap[0], ap[1]) || 1;
             const fwd = [ap[0] / len, ap[1] / len];
             const rgt = [fwd[1], -fwd[0]];
             const d = [g[0] - ap[0], g[1] - ap[1]];
-            const ly = d[0] * fwd[0] + d[1] * fwd[1];
-            const lx = d[0] * rgt[0] + d[1] * rgt[1];
-            const base = -0.7, tip = 1.7, halfW = 1.15;
-            if (ly > base && ly < tip && Math.abs(lx) < halfW * (1 - (ly - base) / (tip - base))) {
-                return a.id;
-            }
+            const ly = (d[0] * fwd[0] + d[1] * fwd[1]) / size;
+            const lx = (d[0] * rgt[0] + d[1] * rgt[1]) / size;
+            if (arrowHit(lx, ly, edgeWidth / size)) return a.id;
         }
         for (const p of this._navPois) {
             if (Math.hypot(g[0] - p.east, g[1] - p.north) < POI_PICK_RADIUS_M) return p.id;
@@ -508,6 +586,9 @@ export class Photosphere {
         const { lngLat, zoom, eyeHeight, onEnter } = this._options;
         this._animate({ center: lngLat, zoom, pitch: 90, bearing: this._yawDeg }, eyeHeight, 1, () => {
             this._mode = 'inside';
+            // The last animation frame's offset is from the previous camera centre; at the
+            // anchor it must be zero, or slow frames leave the photo drawn as a distant ball.
+            this._sphereCenterOffset = [0, 0, 0];
             this._updateCameraWhileInside();
             this._scheduleTileRefresh();
             if (onEnter) onEnter();
@@ -662,6 +743,7 @@ export class Photosphere {
         container.removeEventListener('touchstart', this._onTouchStart);
         container.removeEventListener('touchmove', this._onTouchMove);
         container.removeEventListener('touchend', this._onTouchEnd);
+        container.removeEventListener('wheel', this._onWheel);
         if (map.getLayer(this._layer.id)) {
             map.removeLayer(this._layer.id);
         }
@@ -680,9 +762,10 @@ export class Photosphere {
         const gl = this._gl;
         const layer = this._layerCtx;
         if (!gl || !layer) return;
-        const image = new Image();
-        image.crossOrigin = 'anonymous';
-        image.onload = () => {
+        const preloaded = this._preloaded.get(url);
+        this._preloaded.delete(url);
+        (preloaded || decodeImage(url)).then((image) => {
+            if (this._gl !== gl) return; // removed meanwhile
             gl.bindTexture(gl.TEXTURE_2D, layer[slot]);
             gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
             layer[slot + 'Image'] = image; // kept to seed a tile atlas later
@@ -695,9 +778,22 @@ export class Photosphere {
             }
             this._map.triggerRepaint();
             if (onReady) onReady();
-        };
-        image.onerror = () => onReady && onReady(new Error(`photosphere image failed: ${url}`));
-        image.src = url;
+        }, () => onReady && onReady(new Error(`photosphere image failed: ${url}`)));
+    }
+
+    // Start downloading and decoding a panorama now (e.g. the next and previous along a
+    // sequence), so a later enter()/goTo() to it only pays the texture upload. Keeps the
+    // PRELOAD_MAX most recent; each decoded 8192×4096 image holds ~130 MB until used.
+    preload(url) {
+        if (!url || this._preloaded.has(url)) return;
+        const pending = decodeImage(url);
+        pending.catch(() => this._preloaded.delete(url));
+        this._preloaded.set(url, pending);
+        while (this._preloaded.size > PRELOAD_MAX) {
+            const [oldest, decoding] = this._preloaded.entries().next().value;
+            this._preloaded.delete(oldest);
+            decoding.then((image) => image.close && image.close(), () => {});
+        }
     }
 
     _loadTexture(url, onReady) {
@@ -857,7 +953,7 @@ export class Photosphere {
 
                 this.aPosition = gl.getAttribLocation(this.program, 'aPosition');
                 this.uniforms = {};
-                for (const name of ['uYaw', 'uPitch', 'uFovY', 'uAspect', 'uAlpha', 'uSphereCenterOffset', 'uSphereRadius', 'uPanorama', 'uSphereCenterOffset2', 'uPanorama2', 'uMix', 'uPanoRot', 'uPanoRot2', 'uFlat', 'uFlat2', 'uTanHalf', 'uTanHalf2', 'uWalkDir', 'uEyeHeight', 'uArrowCount', 'uArrows', 'uPoiCount', 'uPois', 'uPoiColors']) {
+                for (const name of ['uYaw', 'uPitch', 'uFovY', 'uAspect', 'uAlpha', 'uSphereCenterOffset', 'uSphereRadius', 'uPanorama', 'uSphereCenterOffset2', 'uPanorama2', 'uMix', 'uPanoRot', 'uPanoRot2', 'uFlat', 'uFlat2', 'uTanHalf', 'uTanHalf2', 'uWalkDir', 'uEyeHeight', 'uArrowCount', 'uArrows', 'uArrowColor', 'uArrowEdgeColor', 'uArrowSize', 'uArrowEdge', 'uOverlay', 'uPoiCount', 'uPois', 'uPoiColors']) {
                     this.uniforms[name] = gl.getUniformLocation(this.program, name);
                 }
 
@@ -934,17 +1030,25 @@ export class Photosphere {
                 gl.uniform2f(this.uniforms.uTanHalf2, th2[0], th2[1]);
 
                 // Ground navigation arrows (mapmax #26): positions on the floor,
-                // at a fixed distance toward each target bearing.
+                // at the style's distance toward each target bearing.
                 gl.uniform1f(this.uniforms.uEyeHeight, self._options.eyeHeight);
+                const style = self._arrowStyle;
                 const n = Math.min(MAX_ARROWS, self._navArrows.length);
                 gl.uniform1i(this.uniforms.uArrowCount, n);
                 const buf = new Float32Array(MAX_ARROWS * 2);
                 for (let i = 0; i < n; i++) {
                     const br = self._navArrows[i].bearing * Math.PI / 180;
-                    buf[i * 2] = ARROW_GROUND_DIST * Math.sin(br);
-                    buf[i * 2 + 1] = ARROW_GROUND_DIST * Math.cos(br);
+                    buf[i * 2] = style.distance * Math.sin(br);
+                    buf[i * 2 + 1] = style.distance * Math.cos(br);
                 }
                 gl.uniform2fv(this.uniforms.uArrows, buf);
+                gl.uniform3fv(this.uniforms.uArrowColor, style.color);
+                gl.uniform3fv(this.uniforms.uArrowEdgeColor, style.edgeColor);
+                gl.uniform1f(this.uniforms.uArrowSize, style.size);
+                gl.uniform1f(this.uniforms.uArrowEdge, style.edgeWidth);
+                // Arrows and dots only while inside: they're drawn from the sphere's own view, so
+                // during the enter/exit flight they'd sit pinned on screen while the map moves.
+                gl.uniform1f(this.uniforms.uOverlay, self._mode === 'inside' ? self._opacity : 0);
 
                 // Neighbour-panorama dots at their real ground offsets (#39).
                 const np = Math.min(MAX_POIS, self._navPois.length);
@@ -1020,26 +1124,35 @@ export class Photosphere {
         };
         const durationMs = this._options.durationMs;
         const anchor = this._options.lngLat;
-
-        const step = (now) => {
-            const t = Math.min(1, (now - startTime) / durationMs);
-            const eased = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
-
-            const eyeMercator = MercatorCoordinate.fromLngLat(map.getCenter());
+        const offsetFrom = (centre) => {
+            const eyeMercator = MercatorCoordinate.fromLngLat(centre);
             const sphereMercator = MercatorCoordinate.fromLngLat(anchor);
             const metresToMercatorUnits = sphereMercator.meterInMercatorCoordinateUnits();
-            this._sphereCenterOffset = [
+            return [
                 (sphereMercator.x - eyeMercator.x) / metresToMercatorUnits,
                 -(sphereMercator.y - eyeMercator.y) / metresToMercatorUnits,
                 0
             ];
+        };
+        // Leaving from inside, the map centre is the look target far ahead, not the eye, so an
+        // offset measured from it throws the photo away. Keep the photo on the eye and fade it.
+        const leaving = this._mode === 'exiting';
+
+        const step = (now) => {
+            const t = Math.min(1, (now - startTime) / durationMs);
+            const eased = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+            const center = [
+                start.center.lng + (targetView.center[0] - start.center.lng) * eased,
+                start.center.lat + (targetView.center[1] - start.center.lat) * eased
+            ];
+
+            // Measured from this frame's centre (not the previous frame's), so slow frames don't
+            // leave the sphere a step behind the camera.
+            this._sphereCenterOffset = leaving ? [0, 0, 0] : offsetFrom(center);
             this._opacity = start.opacity + (targetOpacity - start.opacity) * eased;
 
             map.jumpTo({
-                center: [
-                    start.center.lng + (targetView.center[0] - start.center.lng) * eased,
-                    start.center.lat + (targetView.center[1] - start.center.lat) * eased
-                ],
+                center,
                 zoom: start.zoom + (targetView.zoom - start.zoom) * eased,
                 pitch: start.pitch + (targetView.pitch - start.pitch) * eased,
                 bearing: start.bearing + (targetView.bearing - start.bearing) * eased,
@@ -1135,6 +1248,13 @@ export class Photosphere {
     _onTouchEnd(event) {
         this._dragging = false;
         if (!event.touches || event.touches.length < 2) this._pinchDist = 0;
+    }
+
+    // Wheel: FOV zoom while inside (the map's own scrollZoom is disabled there).
+    _onWheel(event) {
+        if (this._mode !== 'inside' || !this._options.scrollZoom || !event.deltaY) return;
+        event.preventDefault();
+        this.zoomFov(Math.sign(event.deltaY) * this._options.scrollZoomStep);
     }
 
     _touchDistance(event) {

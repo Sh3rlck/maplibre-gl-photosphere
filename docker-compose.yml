@@ -1,5 +1,5 @@
 # maplibre-gl-photosphere — reference way to test and preview in containers
-# (see RULES.md: run on the `ssh maplibre` VM, podman compose / docker compose).
+# Containerized test + demo preview (docker compose or podman compose).
 #
 #   podman compose run --rm test      # vitest suite in a Node container
 #   podman compose up -d web          # demo preview on 127.0.0.1:9967 —

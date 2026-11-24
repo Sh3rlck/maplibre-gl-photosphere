@@ -1,12 +1,16 @@
 {
-  "name": "maplibre-gl-photosphere",
-  "version": "0.5.0",
-  "description": "Immersive 360-degree photosphere plugin for MapLibre GL JS: enter a panorama anchored at a geographic point, look around, exit back to the map",
+  "name": "@topodot/maplibre-gl-photosphere",
+  "version": "1.0.0",
+  "description": "Immersive 360-degree photosphere plugin for MapLibre GL JS (TopoDOT fork of maplibre-gl-photosphere): enter a panorama anchored at a geographic point, look around, exit back to the map",
   "type": "module",
   "main": "src/index.js",
   "module": "src/index.js",
+  "types": "src/index.d.ts",
   "exports": {
-    ".": "./src/index.js"
+    ".": {
+      "types": "./src/index.d.ts",
+      "default": "./src/index.js"
+    }
   },
   "files": [
     "src/",
@@ -24,6 +28,9 @@
     "360"
   ],
   "license": "BSD-3-Clause",
+  "publishConfig": {
+    "access": "public"
+  },
   "peerDependencies": {
     "maplibre-gl": ">=5.0.0"
   },
@@ -34,10 +41,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/clement-igonet/maplibre-gl-photosphere.git"
+    "url": "git+https://github.com/Sh3rlck/maplibre-gl-photosphere.git"
   },
-  "homepage": "https://github.com/clement-igonet/maplibre-gl-photosphere",
+  "homepage": "https://github.com/Sh3rlck/maplibre-gl-photosphere",
   "bugs": {
-    "url": "https://github.com/clement-igonet/maplibre-gl-photosphere/issues"
+    "url": "https://github.com/Sh3rlck/maplibre-gl-photosphere/issues"
   }
 }
