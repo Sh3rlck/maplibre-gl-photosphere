@@ -308,6 +308,7 @@ export class Photosphere {
         this._navPois = []; //   [{ east, north (m from eye), id, color? }] floor dots
         this._arrowStyle = { ...DEFAULT_ARROW_STYLE, ...(options.arrowStyle || {}) };
         this._preloaded = new Map(); // url → Promise of a decoded image, from preload()
+        this._readyWaiters = []; // whenReady() callers until the current texture is up
         this._sphereCenterOffset = [0, 0, 0];
         this._sphereCenterOffset2 = [0, 0, 0]; // next pano while walking (#5b)
         this._mix = 0; // crossfade weight during a walk transition
@@ -339,19 +340,18 @@ export class Photosphere {
         this._tileTimer = null;
 
         this._layer = this._createLayer();
-        // MapLibre 6's internal `map.style` is not a truthy public property, so
-        // the old `map.style && map.loaded()` guard fell through to a 'load'
-        // listener that never fires when the style is already loaded — leaving
-        // the custom layer unadded (onAdd never runs, textures never load).
-        // Use the public isStyleLoaded() and add immediately when ready.
+        // isStyleLoaded() is also false while any source is still loading tiles or GeoJSON,
+        // and then neither 'load' nor 'styledata' may come again: the layer (and the photo)
+        // never appeared. addLayer only needs the style itself, so try it, and wait for the
+        // style to load only when that throws.
         const addLayer = () => {
             if (!map.getLayer(this._layer.id)) map.addLayer(this._layer);
         };
-        if (map.isStyleLoaded()) {
+        try {
             addLayer();
-        } else {
+        } catch {
+            map.once('style.load', addLayer);
             map.once('load', addLayer);
-            map.once('styledata', addLayer);
         }
 
         this._pinchDist = 0;
@@ -744,6 +744,7 @@ export class Photosphere {
         container.removeEventListener('touchmove', this._onTouchMove);
         container.removeEventListener('touchend', this._onTouchEnd);
         container.removeEventListener('wheel', this._onWheel);
+        this._settleReady(new Error('photosphere removed'));
         if (map.getLayer(this._layer.id)) {
             map.removeLayer(this._layer.id);
         }
@@ -775,10 +776,32 @@ export class Photosphere {
                 // current panorama has a tiles config (v0.3.0).
                 this._tileState = null;
                 if (this._tiles) this._buildAtlas(image, this._tiles);
+                this._settleReady();
             }
             this._map.triggerRepaint();
             if (onReady) onReady();
-        }, () => onReady && onReady(new Error(`photosphere image failed: ${url}`)));
+        }, () => {
+            const error = new Error(`photosphere image failed: ${url}`);
+            if (slot === 'texture') this._settleReady(error);
+            if (onReady) onReady(error);
+        });
+    }
+
+    // Resolves once the current panorama is on the GPU, e.g. to start enter() only then so
+    // the flight isn't interrupted by a large image's decode and upload. Rejects if the image
+    // fails to load or the photosphere is removed first.
+    whenReady() {
+        if (this._layerCtx && this._layerCtx.textureReady) return Promise.resolve();
+        return new Promise((resolve, reject) => this._readyWaiters.push({ resolve, reject }));
+    }
+
+    _settleReady(error) {
+        const waiters = this._readyWaiters;
+        this._readyWaiters = [];
+        for (const { resolve, reject } of waiters) {
+            if (error) reject(error);
+            else resolve();
+        }
     }
 
     // Start downloading and decoding a panorama now (e.g. the next and previous along a

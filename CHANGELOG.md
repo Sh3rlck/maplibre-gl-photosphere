@@ -8,6 +8,19 @@
 - #3: flat pictures — gnomonic perspective window in the sphere shader ([#7](https://github.com/clement-igonet/maplibre-gl-photosphere/pull/7)) (by [@clement-igonet](https://github.com/clement-igonet))
 # Changelog
 
+## 1.0.1
+
+### ✨ Features and improvements
+- `whenReady()`: resolves once the current panorama is on the GPU (rejects if it
+  fails to load or on `remove()`), so a host can start `enter()` only then and
+  report load failures instead of showing an empty sphere.
+
+### 🐞 Bug fixes
+- The layer was only added when `map.isStyleLoaded()` was true, which is false
+  while any source is still loading tiles or GeoJSON; the fallback waited for
+  `load`/`styledata` events that may never come, so in busy maps the photo never
+  appeared. The layer is now added whenever the style itself is loaded.
+
 ## 1.0.0 (TopoDOT fork of 0.5.0)
 
 Published as `@topodot/maplibre-gl-photosphere`.

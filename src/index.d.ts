@@ -134,6 +134,8 @@ export class Photosphere {
 
     /** Download and decode a panorama ahead of enter()/goTo() (keeps the 2 most recent). */
     preload(url: string): void;
+    /** Resolves once the current panorama is on the GPU; rejects if it fails to load or on remove(). */
+    whenReady(): Promise<void>;
     enter(target?: PanoTarget): void;
     goTo(target: PanoTarget): void;
     exit(): void;

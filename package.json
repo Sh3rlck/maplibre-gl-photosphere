@@ -1,6 +1,6 @@
 {
   "name": "@topodot/maplibre-gl-photosphere",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Immersive 360-degree photosphere plugin for MapLibre GL JS (TopoDOT fork of maplibre-gl-photosphere): enter a panorama anchored at a geographic point, look around, exit back to the map",
   "type": "module",
   "main": "src/index.js",
